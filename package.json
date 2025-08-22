@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "postbuild" : "cp dist/index.html dist/404.html"
   },
   "dependencies": {
     "react": "^18.3.1",

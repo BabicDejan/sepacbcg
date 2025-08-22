@@ -269,12 +269,15 @@ export default function SepaSwiftSimulator() {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
                 <Field label="SEPA način">
                   <Segmented
-                    value={useInstant ? 'SCT Inst (≈2s)' : 'SCT standard (1 dan ≈ 20s)'}
+                    value={useInstant ? 'SCT Inst (dostupno od 07/2026)' : 'SCT standard (do 1 dan)'}
                     onChange={(v) => setUseInstant(v.includes('Inst'))}
-                    options={['SCT Inst (≈2s)', 'SCT standard (1 dan ≈ 20s)']}
+                    options={['SCT Inst (dostupno od 07/2026)', 'SCT standard (do 1 dan)']}
                   />
                 </Field>
-                <div className="opacity-70 text-sm flex items-center">SWIFT demo: 2 dana ≈ 40 sekundi</div>
+                <div className="flex flex-col justify-center opacity-70 text-sm gap-1 h-full">
+                    <span>SEPA demo: 1 dan ≈ 20 sekundi</span>
+                    <span>SWIFT demo: 2 dana ≈ 40 sekundi</span>
+                </div>
               </div>
 
               {/* SWIFT izbor banke i troškovne opcije */}
@@ -331,6 +334,7 @@ export default function SepaSwiftSimulator() {
               colorTo="#00ea9c"
               progress={sepaProgress}
               done={finished.sepa || sepaProgress >= 100}
+              running={running}
             />
 
             <StatusCard
@@ -340,6 +344,7 @@ export default function SepaSwiftSimulator() {
               colorTo="#74ebd5"
               progress={swiftProgress}
               done={finished.swift || swiftProgress >= 100}
+              running={running}
             />
 
             <SummaryPanel
@@ -490,8 +495,8 @@ function Select({ value, onChange, options }:{
   )
 }
 
-function StatusCard({ title, subtitle, colorFrom, colorTo, progress, done }:{
-  title:string; subtitle:string; colorFrom:string; colorTo:string; progress:number; done:boolean;
+function StatusCard({ title, subtitle, colorFrom, colorTo, progress, done, running }:{
+  title:string; subtitle:string; colorFrom:string; colorTo:string; progress:number; done:boolean;running:boolean
 }) {
   // prikaži jednu decimalu ispod 10%, da ne izgleda kao da "stoji"
   const progressLabel = done ? 'Završeno' : (progress < 10 ? `${progress.toFixed(1)}%` : `${Math.round(progress)}%`)
@@ -510,16 +515,18 @@ function StatusCard({ title, subtitle, colorFrom, colorTo, progress, done }:{
       </div>
       <ProgressBar progress={progress} colorFrom={colorFrom} colorTo={colorTo} />
       <div className="mt-3 text-sm text-white/80">
-        {done ? (
-          <div className="flex items-center gap-2 text-white">
-            <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white text-[#0b1f3b]">✓</span>
-            Sredstva su dostupna primaocu.
-          </div>
-        ) : (
-          <div className="flex items-center gap-2">
-            <PulseDot colorFrom={colorFrom} colorTo={colorTo} /> Obrada u toku…
-          </div>
-        )}
+        {running && (
+    done ? (
+      <div className="flex items-center gap-2 text-white">
+        <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white text-[#0b1f3b]">✓</span>
+        Sredstva su dostupna primaocu.
+      </div>
+    ) : (
+      <div className="flex items-center gap-2">
+        <PulseDot colorFrom={colorFrom} colorTo={colorTo} /> Obrada u toku…
+      </div>
+    )
+  )}
       </div>
     </div>
   )

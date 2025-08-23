@@ -1,17 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 
-// ──────────────────────────────────────────────────────────────
-// Konstante (demo trajanja + fiksno stanje)
-// ──────────────────────────────────────────────────────────────
+/* ──────────────────────────────────────────────────────────────
+   Konstante (demo trajanja + fiksno stanje)
+   ────────────────────────────────────────────────────────────── */
 const FIXED_START_BALANCE = 2000 // € – nije editabilno
 const SEPA_INSTANT_DURATION = 2_000 // demo: ~2s
 const SEPA_STANDARD_DURATION = 20_000 // demo: 1 dan ≈ 20s
 const SWIFT_DEMO_DURATION = 40_000 // demo: 2 dana ≈ 40s
 
 // SEPA naknade — indikativno:
-// - prvi dnevni transfer do 200€ = 0,02€
-// - e-kanali: ≤20.000€ = 1,99€, >20.000€ = 25€
-// - šalter:   ≤20.000€ = 3,99€, >20.000€ = 50€
 function calcSepaFee(amount: number, channel: 'e-bankarstvo' | 'šalter', firstOfDay: boolean) {
   if (firstOfDay && amount <= 200) return 0.02
   if (channel === 'e-bankarstvo') return amount <= 20_000 ? 1.99 : 25
@@ -22,13 +19,11 @@ function calcSepaFee(amount: number, channel: 'e-bankarstvo' | 'šalter', firstO
 function formatEUR(n: number) {
   return new Intl.NumberFormat('me-ME', { style: 'currency', currency: 'EUR', minimumFractionDigits: 2 }).format(n)
 }
-
 function toAccCountry(country: string) {
   const s = (country || '').trim()
   if (s.length < 2) return s
   return s.slice(0, -1) + 'u'
 }
-
 function round2(n: number) { return Math.round(n * 100) / 100 }
 function formatTime(ms: number) {
   const s = Math.floor(ms / 1000)
@@ -43,9 +38,48 @@ function formatTime(ms: number) {
   return `${d}d ${h % 24}h`
 }
 
-// ──────────────────────────────────────────────────────────────
-// SWIFT profili – indikativno (CG tržište): banke + BEN/SHA/OUR
-// ──────────────────────────────────────────────────────────────
+/* ──────────────────────────────────────────────────────────────
+   NEW: SEPA/EU pomoćne liste + IBAN alati (demo)
+   ────────────────────────────────────────────────────────────── */
+const COUNTRY_NAME_TO_CODE: Record<string, string> = {
+  'Njemačka':'DE','Italija':'IT','Francuska':'FR','Španija':'ES','Hrvatska':'HR',
+  'Slovenija':'SI','Austrija':'AT','Holandija':'NL','Švedska':'SE','Irska':'IE'
+}
+
+const SEPA_CODES = new Set([
+  // EU + EEA (+ većina ostalih SEPA)
+  'AT','BE','BG','HR','CY','CZ','DK','EE','FI','FR','DE','GR','HU','IE','IT','LV','LT','LU','MT','NL','PL','PT','RO','SK','SI','ES','SE',
+  'IS','LI','NO',
+  // Ostale: UK, CH, AD, MC, SM, VA, AND 'ME' (CG) – demo
+  'GB','CH','AD','MC','SM','VA','ME'
+])
+const EU_EEA_CODES = new Set([
+  'AT','BE','BG','HR','CY','CZ','DK','EE','FI','FR','DE','GR','HU','IE','IT','LV','LT','LU','MT','NL','PL','PT','RO','SK','SI','ES','SE',
+  'IS','LI','NO'
+])
+// zemalje sa dobrim SCT Inst pokrivanjem (demo)
+const INSTANT_GOOD_COVERAGE = new Set(['DE','NL','ES','PT','FR','IT','SI','HR','AT','EE','LT','LV','BE','FI','SK','IE'])
+
+// CG go-live za SEPA kreditne transfere (demo guard)
+const CG_SEPA_GO_LIVE = new Date('2025-10-05')
+
+// Lokalni korisnik u CG (za IBAN-diskriminaciju poruku)
+const USER_HOME_COUNTRY = 'ME'
+
+function getIbanCountry(ibanRaw: string): string | null {
+  const iban = (ibanRaw || '').replace(/\s+/g, '').toUpperCase()
+  const m = iban.match(/^([A-Z]{2})\d{2}[A-Z0-9]+$/)
+  return m ? m[1] : null
+}
+function isSepaActiveFor(code: string) {
+  if (!code) return false
+  if (code === 'ME') return true  
+  return SEPA_CODES.has(code)
+}
+
+/* ──────────────────────────────────────────────────────────────
+   SWIFT profili – indikativno (CG tržište): banke + BEN/SHA/OUR
+   ────────────────────────────────────────────────────────────── */
 type SwiftCostOption = 'BEN' | 'SHA' | 'OUR'
 type SwiftBank = 'Generic' | 'NLB' | 'CKB' | 'Hipotekarna'
 
@@ -58,10 +92,9 @@ const SWIFT_BANK_PROFILES: Record<
   }
 > = {
   Generic: (amount, option) => {
-    // tipične flat + posrednik ~25€
     const base = amount <= 1_000 ? 10 : amount <= 20_000 ? 20 : 35
     const correspondent = option === 'OUR' ? 0 : 25
-    const sender = base + (option === 'OUR' ? 25 : 0) // OUR pokriva dio troškova trećih
+    const sender = base + (option === 'OUR' ? 25 : 0)
     return { senderFee: round2(sender), correspondentFee: round2(correspondent) }
   },
   NLB: (amount, option) => {
@@ -100,11 +133,98 @@ function calcSwiftFees(amount: number, bank: SwiftBank, option: SwiftCostOption)
   return { senderFee, correspondentFee, beneficiaryGets, senderPaysTotal, note }
 }
 
-// ──────────────────────────────────────────────────────────────
-// Glavna komponenta
-// ──────────────────────────────────────────────────────────────
+/* ──────────────────────────────────────────────────────────────
+   NEW: SEPA checker logika (decision tree)
+   ────────────────────────────────────────────────────────────── */
+type SepaMethod = 'SCT'|'SCT_INST'|'SDD'|'NONE'
+type SepaDecision = {
+  eligible: boolean
+  method: SepaMethod
+  reasons: string[]
+  warnings: string[]
+}
+
+function decideSepa({
+  amount,
+  payeeIban,
+  countryName,
+  wantsInstant,
+  isSubscription,
+}:{
+  amount:number
+  payeeIban:string
+  countryName:string
+  wantsInstant:boolean
+  isSubscription:boolean
+}): { decision: SepaDecision, payeeCode: string | null } {
+  const reasons:string[] = []
+  const warnings:string[] = []
+  let method: SepaMethod = 'NONE'
+
+  // valuta = EUR u ovoj aplikaciji
+  if (amount <= 0) {
+    return { decision: { eligible:false, method:'NONE', reasons:['Unesi iznos.'], warnings:[] }, payeeCode:null }
+  }
+
+  // odredi zemlju primaoca – IBAN prioritet, inače selektor
+  const codeFromIban = getIbanCountry(payeeIban || '')
+  const codeFromSelect = COUNTRY_NAME_TO_CODE[countryName] || null
+  const payeeCode = codeFromIban || codeFromSelect
+
+  if (!payeeCode) {
+    reasons.push('Nedostaje zemlja primaoca (unesi IBAN ili izaberi destinaciju).')
+    return { decision: { eligible:false, method:'NONE', reasons, warnings }, payeeCode }
+  }
+
+  // SEPA aktivnost (CG guard do go-live)
+  if (!isSepaActiveFor(payeeCode)) {
+    reasons.push('Banka primaoca nije u SEPA (još) ili nije aktivna.')
+    return { decision: { eligible:false, method:'NONE', reasons, warnings }, payeeCode }
+  }
+
+  // Pretplata (SDD) ima poslovna ograničenja van EU/EEA
+  if (isSubscription) {
+    if (EU_EEA_CODES.has(payeeCode)) {
+      method = wantsInstant ? 'SCT_INST' : 'SDD' // prikaži da je SDD primarni, ali dozvoli prikaz instant-a kao “želim odmah”
+      reasons.push('Pretplata: SEPA Direct Debit (SDD) je moguć u EU/EEA.')
+    } else {
+      method = 'SCT'
+      reasons.push('Pretplata traži SDD; van EU/EEA to može biti ograničeno.')
+      warnings.push('Van EU/EEA trgovci često ne nude SDD – koristi SCT ili karticu.')
+      if (USER_HOME_COUNTRY !== 'ME') { /* placeholder ako želiš dinamično */ }
+    }
+  } else {
+    // Jednokratno plaćanje (SCT / SCT Inst)
+    if (wantsInstant && INSTANT_GOOD_COVERAGE.has(payeeCode)) {
+      method = 'SCT_INST'
+      reasons.push('Obje strane tipično podržavaju SCT Inst (demo pretpostavka).')
+    } else if (wantsInstant && !INSTANT_GOOD_COVERAGE.has(payeeCode)) {
+      method = 'SCT'
+      reasons.push('Instant nije svuda dostupan – koristi standardni SCT.')
+    } else {
+      method = 'SCT'
+      reasons.push('Standardni SEPA kreditni transfer (SCT) je dostupan.')
+    }
+  }
+
+  // IBAN diskriminacija – informativno
+  if (!EU_EEA_CODES.has(USER_HOME_COUNTRY) && EU_EEA_CODES.has(payeeCode) && method === 'SDD') {
+    warnings.push('SDD sa IBAN-om van EU/EEA (npr. ME) može biti odbijen iz poslovnih razloga.')
+  }
+
+const eligible: boolean = method !== ("NONE" as SepaMethod);
+
+return {
+  decision: { eligible, method, reasons, warnings },
+  payeeCode,
+};
+}
+
+/* ──────────────────────────────────────────────────────────────
+   Glavna komponenta
+   ────────────────────────────────────────────────────────────── */
 export default function SepaSwiftSimulator() {
-  // Fiksno stanje (prikaz – skidamo kad pošalje, po želji)
+  // Fiksno stanje
   const [balance, setBalance] = useState<number>(FIXED_START_BALANCE)
 
   // Podesivi parametri (osim stanja)
@@ -119,6 +239,10 @@ export default function SepaSwiftSimulator() {
   const [channel, setChannel] = useState<'e-bankarstvo' | 'šalter'>('e-bankarstvo')
   const [firstOfDay, setFirstOfDay] = useState<boolean>(true)
   const [useInstant, setUseInstant] = useState<boolean>(true)
+
+  // NEW: dodatni ulazi za checker
+  const [payeeIban, setPayeeIban] = useState<string>('')           // NEW
+  const [isSubscription, setIsSubscription] = useState<boolean>(false) // NEW
 
   // SWIFT izbor
   const [swiftBank, setSwiftBank] = useState<SwiftBank>('Generic')
@@ -144,14 +268,34 @@ export default function SepaSwiftSimulator() {
   // Trajanja
   const sepaDuration = useMemo(() => (useInstant ? SEPA_INSTANT_DURATION : SEPA_STANDARD_DURATION), [useInstant])
   const countryAcc = useMemo(() => toAccCountry(country), [country])
-
   const swiftDuration = SWIFT_DEMO_DURATION
 
   const timeSavedMs = useMemo(() => Math.max(swiftDuration - sepaDuration, 0), [sepaDuration, swiftDuration])
-  // Ušteda za pošiljaoca: uporedi naknadu pošiljaoca (SWIFT vs SEPA)
-  const moneySaved = useMemo(() => Math.max(swiftSenderFeeCalc - sepaFee, 0), [sepaFee, swiftSenderFeeCalc])
+
+  // Realna ušteda: kolika je "efektivna cijena" da primalac dobije pun iznos
+  const moneySaved = useMemo(() => {
+  // Koliko košta da primalac dobije pun iznos kod SEPA
+    const sepaEffectiveCost = amount + sepaFee // primalac dobija cijeli iznos
+
+  // Koliko efektivno košta kod SWIFT-a
+  // -> pošiljalac plati amount + senderFee, primalac dobije manje (swiftBeneficiaryGets)
+    const swiftEffectiveCost = swiftSenderPaysTotal - swiftBeneficiaryGets + amount
+
+  // Ušteda = razlika između SWIFT i SEPA effective cost
+    return round2(Math.max(swiftEffectiveCost - sepaEffectiveCost, 0))
+  }, [amount, sepaFee, swiftSenderPaysTotal, swiftBeneficiaryGets])
+
 
   const disabled = amount <= 0 || amount > balance || running
+
+  // NEW: odluka checkera
+  const { decision: sepaDecision, payeeCode } = useMemo(() => decideSepa({
+    amount,
+    payeeIban,
+    countryName: country,
+    wantsInstant: useInstant,
+    isSubscription
+  }), [amount, payeeIban, country, useInstant, isSubscription])
 
   // Tajmeri
   const sepaTimerRef = useRef<number | null>(null)
@@ -189,10 +333,7 @@ export default function SepaSwiftSimulator() {
 
     setBalance((b) => round2(b - amount - sepaFee))
 
-    // (opciono) skini iznos + SEPA fee iz balansa kad šalješ
-    // setBalance((b) => round2(b - amount - sepaFee))
-
-    // SEPA progress (interval, da radi i u background tabu)
+    // SEPA progress (interval)
     sepaStartRef.current = performance.now();
     sepaIntervalRef.current = window.setInterval(() => {
       const elapsed = performance.now() - sepaStartRef.current;
@@ -257,6 +398,11 @@ export default function SepaSwiftSimulator() {
                 </Field>
               </div>
 
+              {/* NEW: IBAN primaoca (opciono) */}
+              <Field label="IBAN primaoca (opciono)">
+                <IbanInput value={payeeIban} onChange={setPayeeIban} />
+              </Field>
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
                 <Field label="Kanal SEPA plaćanja">
                   <Segmented value={channel} onChange={(v) => setChannel(v as any)} options={['e-bankarstvo', 'šalter']} />
@@ -274,10 +420,10 @@ export default function SepaSwiftSimulator() {
                     options={['SCT Inst (dostupno od 07/2026)', 'SCT standard (do 1 dan)']}
                   />
                 </Field>
-                <div className="flex flex-col justify-center opacity-70 text-sm gap-1 h-full">
-                    <span>SEPA demo: 1 dan ≈ 20 sekundi</span>
-                    <span>SWIFT demo: 2 dana ≈ 40 sekundi</span>
-                </div>
+                {/* NEW: SDD preklopnik */}
+                <Field label="Pretplata (SEPA Direct Debit)?">
+                  <Toggle value={isSubscription} onChange={setIsSubscription} />
+                </Field>
               </div>
 
               {/* SWIFT izbor banke i troškovne opcije */}
@@ -327,6 +473,13 @@ export default function SepaSwiftSimulator() {
 
           {/* Desni panel – vizuelna simulacija */}
           <div className="space-y-6">
+            {/* NEW: “Mogu li platiti SEPOM?” kartica */}
+            <SepaEligibilityCard
+              decision={sepaDecision}
+              payeeCode={payeeCode}
+              payeeIban={payeeIban}
+            />
+
             <StatusCard
               title={useInstant ? 'SEPA Instant (SCT Inst)' : 'SEPA standard (SCT)'}
               subtitle={useInstant ? 'Demo: ≈2 sekunde – 24/7/365' : 'Demo: 1 dan ≈ 20 sekundi (grafički prikaz)'}
@@ -371,9 +524,9 @@ export default function SepaSwiftSimulator() {
   )
 }
 
-// ──────────────────────────────────────────────────────────────
-// UI helpers
-// ──────────────────────────────────────────────────────────────
+/* ──────────────────────────────────────────────────────────────
+   UI helpers
+   ────────────────────────────────────────────────────────────── */
 function Header({ balance }: { balance: number }) {
   return (
     <div className="flex items-start justify-between gap-4">
@@ -412,13 +565,11 @@ function AmountInput({ value, onChange }:{
         placeholder="0"
         value={value}
         onChange={(e) => {
-          // dozvoli samo cifre, tačku i zarez
           const raw = e.target.value
           const cleaned = raw.replace(/[^\d.,]/g, '')
           onChange(cleaned)
         }}
         onBlur={(e) => {
-          // na blur normalizuj vodeće nule (npr. 00012 -> 12)
           const normalized = e.target.value.replace(',', '.').replace(/^0+(?=\d)/, '')
           onChange(normalized)
         }}
@@ -498,7 +649,6 @@ function Select({ value, onChange, options }:{
 function StatusCard({ title, subtitle, colorFrom, colorTo, progress, done, running }:{
   title:string; subtitle:string; colorFrom:string; colorTo:string; progress:number; done:boolean;running:boolean
 }) {
-  // prikaži jednu decimalu ispod 10%, da ne izgleda kao da "stoji"
   const progressLabel = done ? 'Završeno' : (progress < 10 ? `${progress.toFixed(1)}%` : `${Math.round(progress)}%`)
   return (
     <div className="relative overflow-hidden rounded-2xl bg-white/10 p-6 shadow-xl ring-1 ring-white/10">
@@ -516,17 +666,17 @@ function StatusCard({ title, subtitle, colorFrom, colorTo, progress, done, runni
       <ProgressBar progress={progress} colorFrom={colorFrom} colorTo={colorTo} />
       <div className="mt-3 text-sm text-white/80">
         {running && (
-    done ? (
-      <div className="flex items-center gap-2 text-white">
-        <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white text-[#0b1f3b]">✓</span>
-        Sredstva su dostupna primaocu.
-      </div>
-    ) : (
-      <div className="flex items-center gap-2">
-        <PulseDot colorFrom={colorFrom} colorTo={colorTo} /> Obrada u toku…
-      </div>
-    )
-  )}
+          done ? (
+            <div className="flex items-center gap-2 text-white">
+              <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white text-[#0b1f3b]">✓</span>
+              Sredstva su dostupna primaocu.
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <PulseDot colorFrom={colorFrom} colorTo={colorTo} /> Obrada u toku…
+            </div>
+          )
+        )}
       </div>
     </div>
   )
@@ -535,7 +685,7 @@ function StatusCard({ title, subtitle, colorFrom, colorTo, progress, done, runni
 function ProgressBar({ progress, colorFrom, colorTo }:{
   progress:number; colorFrom:string; colorTo:string;
 }) {
-  const visible = progress > 0 && progress < 1 ? 1 : progress // min 1% da bar bude vidljiv
+  const visible = progress > 0 && progress < 1 ? 1 : progress
   return (
     <div className="h-3 w-full overflow-hidden rounded-full bg-white/10">
       <div
@@ -584,7 +734,7 @@ function SummaryPanel({
         </div>
         <div className="rounded-xl bg-white/5 p-4">
           <StatRow label="Ušteda novca (u odnosu na SWIFT)" value={formatEUR(moneySaved)} positive />
-          <StatRow label="Ušteda vremena" value={timeSaved} positive />
+          <StatRow label="Ušteda vremena" value="Više od 1 dan" positive />
           <StatRow label="Novo stanje (prikaz)" value={formatEUR(balance)} />
         </div>
       </div>
@@ -609,6 +759,79 @@ function Footnote() {
     <div className="mt-8 text-xs text-white/70 space-y-1">
       <p>SEPA Inst je edukativni prikaz; dostupnost i limiti zavise od banke. Standardni SCT se u praksi izvršava najkasnije sljedeći radni dan. U ovoj simulaciji: Inst ≈ 2s, 1 dan ≈ 20s.</p>
       <p>SWIFT transferi u praksi mogu potrajati više dana u zavisnosti od posrednika i zemlje. U ovoj simulaciji: 2 dana ≈ 40s.</p>
+    </div>
+  )
+}
+
+/* ──────────────────────────────────────────────────────────────
+   NEW: UI za IBAN + SEPA eligibility kartica
+   ────────────────────────────────────────────────────────────── */
+function IbanInput({ value, onChange }:{ value:string; onChange:(v:string)=>void }) {
+  return (
+    <div className="flex items-center gap-2 rounded-xl bg-white/10 px-3 py-2 ring-1 ring-inset ring-white/15 focus-within:ring-white/40">
+      <span className="text-white/70">🏦</span>
+      <input
+        type="text"
+        placeholder="npr. DE89 3704 0044 0532 0130 00"
+        value={value}
+        onChange={(e) => {
+          const raw = e.target.value.toUpperCase()
+          const cleaned = raw.replace(/[^A-Z0-9 ]/g, '')
+          onChange(cleaned)
+        }}
+        className="w-full bg-transparent outline-none placeholder-white/40"
+      />
+      {value && (
+        <span className="text-xs text-white/70">
+          {getIbanCountry(value) || '—'}
+        </span>
+      )}
+    </div>
+  )
+}
+
+function SepaEligibilityCard({ decision, payeeCode, payeeIban }:{
+  decision: SepaDecision
+  payeeCode: string | null
+  payeeIban: string
+}) {
+  const { eligible, method, reasons, warnings } = decision
+  const badge = eligible ? (method === 'SCT_INST' ? '✅ SEPA Instant (SCT Inst)' :
+                 method === 'SDD' ? '✅ SEPA Direct Debit (SDD)' :
+                 method === 'SCT' ? '✅ SEPA kreditni transfer (SCT)' : '❌ Nije dostupno')
+               : '❌ Nije dostupno'
+  const sub = payeeCode ? `Primaoc: ${payeeCode}${payeeIban ? ' • IBAN detektovan' : ''}` : 'Primaoc: —'
+  return (
+    <div className="rounded-2xl bg-white/10 p-6 shadow-xl ring-1 ring-white/10">
+      <div className="mb-3 flex items-center justify-between">
+        <div>
+          <h3 className="text-lg font-semibold">Mogu li platiti SEPOM?</h3>
+          <p className="text-sm text-white/80">{sub}</p>
+        </div>
+        <span className={
+          'rounded-full text-sm px-3 py-1 ring-1 ' +
+          (eligible ? 'bg-emerald-400/20 ring-emerald-300/40 text-emerald-100' : 'bg-rose-400/20 ring-rose-300/40 text-rose-100')
+        }>
+          {badge}
+        </span>
+      </div>
+
+      <ul className="text-sm text-white/80 space-y-1">
+        {reasons.map((r,i)=>(<li key={i}>• {r}</li>))}
+      </ul>
+
+      {warnings.length>0 && (
+        <div className="mt-3 rounded-xl bg-amber-400/10 ring-1 ring-amber-300/30 p-3 text-amber-100 text-sm">
+          <div className="font-semibold mb-1">Napomena</div>
+          <ul className="space-y-1">
+            {warnings.map((w,i)=>(<li key={i}>• {w}</li>))}
+          </ul>
+        </div>
+      )}
+
+      <p className="mt-3 text-xs text-white/60">
+        * Checker je edukativan. Instant i SDD zavise od podrške banaka i politike trgovca.
+      </p>
     </div>
   )
 }
